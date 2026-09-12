@@ -10,6 +10,7 @@ app.py — 星野考研资料问答 · 本地网页版
 """
 import json
 import os
+import re
 import socket
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -112,6 +113,31 @@ q.focus();
 </script></body></html>"""
 
 
+# 出处解析。
+# 旧写法只看最后一行，遇到这两种情况就出错：
+#   a) 模型把答案和出处写在同一行 -> lines 只有一个元素 -> answer 被清空，界面显示"（没有拿到回答）"
+#   b) 模型把"出处"换行拆成"出"+"处：" -> 判定不到末尾关键字，出处丢失
+# 改成在全文里正则定位，并且只在抓到"像文件/段落引用"的内容时才切分。
+CITE_RE = re.compile(r"(?:出处|来源|出\s*处)\s*[:：]\s*(.+)", re.S)
+CITE_HINT = (".doc", ".pdf", ".xls", ".md", ".txt", "段", "第")
+
+
+def split_citation(text):
+    """把模型输出拆成 (答案, 出处)。抓不到可靠出处时出处为空，答案原样保留。"""
+    text = (text or "").strip()
+    match = None
+    for m in CITE_RE.finditer(text):
+        if any(h in m.group(1) for h in CITE_HINT):
+            match = m  # 取最后一次可信匹配，避免正文里提到"出处"两字被误切
+    if match is None:
+        return text, ""
+    answer = text[:match.start()].strip()
+    cite = " ".join(match.group(1).split()).strip("。；; ")
+    if not answer:
+        return text, ""
+    return answer, cite
+
+
 def build_answer(question):
     hits = kb.retrieve(CHUNKS, question)
     context = "\n".join(f"[{src}] {t}" for _, t, src in hits)
@@ -124,11 +150,7 @@ def build_answer(question):
     if answer is None:
         answer, usage = kb.ask_ollama(messages)
         model = "本机模型"
-    cite = ""
-    lines = [l.strip() for l in (answer or "").splitlines() if l.strip()]
-    if lines and ("出处" in lines[-1] or "来源" in lines[-1]):
-        cite = lines[-1].split("：", 1)[-1].split(":", 1)[-1].strip()
-        answer = "\n".join(lines[:-1])
+    answer, cite = split_citation(answer)
     return {
         "answer": answer or "（没有拿到回答）",
         "cite": cite,
