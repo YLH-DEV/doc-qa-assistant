@@ -63,6 +63,57 @@
 **修复**：`.env` 必须用"另存为 → 所有文件"创建；改环境变量后要**新开终端**。
 脚本里也加了显式输出"当前使用模型"，避免静默回退。
 
+### 坑 4：模型输出格式不稳定，把出处解析打崩了
+
+**现象**：问"你们支持花呗分期吗？"时，界面偶尔显示「（没有拿到回答）」，可模型明明答了。
+
+**诊断**：原来的出处解析只看**最后一行**：
+
+```python
+lines = [l.strip() for l in answer.splitlines() if l.strip()]
+if lines and ("出处" in lines[-1] or "来源" in lines[-1]):
+    cite = lines[-1].split("：", 1)[-1].split(":", 1)[-1].strip()
+    answer = "\n".join(lines[:-1])      # ← 这里会出事
+```
+
+模型有时候把答案和出处写在**同一行**：
+
+```text
+资料里没有相关信息。出处：03-学员高频问题FAQ.docx·第11段
+```
+
+这时 `lines` 只有一个元素，`lines[:-1]` 是空列表 → **整段答案被吃空**。
+
+另一个变体：模型把「出处」两个字**换行拆开**（`出` / `处：...`），
+末尾关键字判定不到 → 出处丢失，答案里还留着一个孤零零的「出」字。
+
+**修复**：改成在全文里正则定位，并且**只在抓到"像文件/段落引用"的内容时才切分**：
+
+```python
+CITE_RE = re.compile(r"(?:出处|来源|出\s*处)\s*[:：]\s*(.+)", re.S)
+CITE_HINT = (".doc", ".pdf", ".xls", ".md", ".txt", "段", "第")
+
+
+def split_citation(text):
+    text = (text or "").strip()
+    match = None
+    for m in CITE_RE.finditer(text):
+        if any(h in m.group(1) for h in CITE_HINT):
+            match = m                  # 取最后一次可信匹配，避免正文提到"出处"被误切
+    if match is None:
+        return text, ""                # 抓不到可靠出处 → 答案原样保留，不切
+    answer = text[:match.start()].strip()
+    cite = " ".join(match.group(1).split()).strip("。；; ")
+    return answer, cite
+```
+
+**验证**：
+- 7 个单元用例全部通过（含上面两个真实坏样本、无出处、空返回、只有出处行）
+- 5 题验收重跑 **7/7 通过**（第 4 题连跑 3 次，不再出现空答案）
+
+**教训**：**别假设大模型的输出格式是稳定的。**
+解析层的容错比提示词里写"请严格按格式输出"可靠得多 —— 后者只是请求，前者才是保证。
+
 ---
 
 ## 四、成本测算
