@@ -1,0 +1,15 @@
+# 密钥（绝对不要提交！）
+.env
+*.env
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 运行数据与日志
+data/
+*.log
